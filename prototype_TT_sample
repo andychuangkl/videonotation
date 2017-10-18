@@ -1,0 +1,195 @@
+######load DATA#######
+rm(list = ls())
+require(openxlsx)
+library(shiny)
+require(ggplot2)
+library(splines)
+library(Rmisc)
+require(grid)
+library(rsconnect)
+require(shiny)
+require(MASS)
+#rsconnect::setAccountInfo(name='andychuangkl', 
+#token='FF5270A3D8293DA0CB558F2EF045CB19', 
+#secret='Dl9a9AhmMzQM+KuRjgwXTQ6vZC+cbkOVE3+4fuPn')
+
+# Load source_GitHubData
+library(devtools)
+source_gist("ec4cc571e4e5d0a4a9204a1542d144dc", filename = "dynamic_trajectory.R")
+source_gist("bb0577a6f87c8a41fe01de4e863002de", filename = "scoring_performance.R")
+source_gist("a6a381c8133815242091c6f8601e41c4", filename = "cluster_crosstable_analysis.R")
+source_gist("7bf05e9137d33a0e1cf46d228503775b", filename = "TT_logistic_regression.R")
+
+# Load data from google cloud 
+location = read.csv("https://drive.google.com/uc?export=download&id=0B7msegNDLl0aMzl0VTMzNXBNVzA", 
+                    header=TRUE, stringsAsFactors=FALSE)
+
+
+
+##############shiny############
+#ui
+{
+  ui<-shinyUI(navbarPage("Table Tennis",
+                         tabPanel("Data Analysis",
+                                  pageWithSidebar(
+                                    headerPanel(""),
+                                    sidebarPanel(
+                                      selectInput("mode", "mode", c("Dynamical_Trajectory","Scoring_Performance","cluster_crosstable_analysis","TT_logistic_regression"),selected="Dynamical_Trajectory"),
+                                      selectInput("player", "player_names", c(names(table(location$player_name)),"ALL"),selected = "chih-yuan Chuang"),
+                                      uiOutput("cp"),
+                                      selectInput("skill", "skill(mode:DT)", c(names(table(location$skill))[1:2],"ALL"),selected="ALL"),
+                                      selectInput("result_point", "result_point(mode:DT)", c(names(table(location$Winner)),"ALL"),selected="ALL"),
+                                      selectInput("landing_phase", "landing_phase(mode:DT,CCA)", c("o-1","o-2","o-3","s-1","s-2","s-3"), selected="o-1"),
+                                      selectInput("return_Angle_phase", "return_Angle_phase(mode:TLR)", c("o-3","o-4","s-3","s-4"), selected="s-4")
+                                    ),
+                                    mainPanel(plotOutput("plot1",height = "800px"),
+                                              verbatimTextOutput('values'))
+                                  )),
+                         tabPanel("video",
+                                  pageWithSidebar(
+                                    headerPanel(""),
+                                    sidebarPanel(
+                                      selectInput("pco","player_names",names(table(location$player_name)),selected = "chih-yuan Chuang"),
+                                      uiOutput("co"),
+                                      uiOutput("mi"),
+                                      selectInput("mco", "moive_start_stroke", c("o-1","o-2","s-1","s-2"), selected="o-1"),
+                                      selectInput("vk","return_skill",c("backhand","forehand"),selected="backhand"),
+                                      selectInput("vw","Winner",names(table(location$WIN)),selected="s"),
+                                      uiOutput("ui"),
+                                      actionButton("go","again")
+                                    ),
+                                    htmlOutput("htm", container = tags$li, class = "custom-li-output")
+                                  ))
+  ))
+}
+
+#server
+{
+  server<-shinyServer(function(input, output,session) {
+    output$cp<-renderUI({
+      selectInput("tournament", "tournament", if(input$player == "ALL"){
+        c(names(table(location$competition)),"ALL") 
+      }else{
+        c(names(table(as.character(location[location$player_name == input$player,]$competition))),"ALL")},selected="ALL")
+      
+    })
+    output$plot1 <- renderPlot({
+      mo<-input$mode
+      if(mo == "Dynamical_Trajectory"){
+        DJ = dynamic_trajectory(data = location, 
+                                competition =  input$tournament, 
+                                player = input$player,
+                                skill = input$skill ,
+                                result_point = input$result_point)
+        switch(input$landing_phase,
+               "s-1" = print(DJ$o2),
+               "s-2" = print(DJ$o3),
+               "s-3" = print(DJ$o4),
+               "o-1" = print(DJ$s2),
+               "o-2" = print(DJ$s3),
+               "o-3" = print(DJ$s4))
+      }
+      if(mo=="Scoring_Performance"){
+        SP = scoring_performance(data = location,
+                                 competition = input$tournament,
+                                 player = input$player)
+      }
+      if(mo=="cluster_crosstable_analysis"){
+        
+        cc = cluster_crosstable_analysis(data = location,
+                                         competition = input$tournament,
+                                         player = input$player,
+                                         landingphase = input$landing_phase
+        )
+        
+      }
+      if(mo=="TT_logistic_regression"){
+        LR= TT_logistic_regression(
+          data = location,
+          competition = input$tournament,
+          player = input$player,
+          test_stroke = input$return_Angle_phase)
+        print(LR$plot)
+      }
+    })
+    output$values<-renderPrint({  
+      mo<-input$mode
+      if(mo=="Dynamical_Trajectory"){
+        print("no_statistic")}
+      if(mo=="Scoring_Performance"){
+        SP = scoring_performance(data = location,
+                                 competition = input$tournament,
+                                 player = input$player)
+        print(list(Friedman_test = SP$Friedman_test, wilcoxon_sign_rank_sum_test = SP$wilcoxon_sign_rank_sum_test))
+      }
+      if(mo=="cluster_crosstable_analysis"){
+        cc = cluster_crosstable_analysis(data = location,
+                                         competition = input$tournament,
+                                         player = input$player,
+                                         landingphase = input$landing_phase
+        )
+        print(cc$statistic)
+      }
+      if(mo=="TT_logistic_regression"){
+        LR= TT_logistic_regression(
+          data = location,
+          competition = input$tournament,
+          player = input$player,
+          test_stroke = input$return_Angle_phase)
+        print(LR$logistic)
+      }  
+    })
+    output$co<-renderUI({
+      selectInput("yco", "tournament", 
+        names(table(as.character(location[location$player_name == input$pco,]$competition))),selected="ALL")
+      
+    })  
+    output$mi<-renderUI({
+      selectInput("abb", "video_match", names(table(location[location$competition==input$yco,]$matches)))
+    })
+    output$ui<-renderUI({
+      selectInput("form","select_film",
+                  round(location[location$competition==input$yco & 
+                                   location$matches== input$abb & 
+                                   location$np==input$mco &
+                                   location$skill==input$vk &
+                                   location$WIN==input$vw,]$time,0))
+    })
+    output$htm <- renderUI({
+      input$go
+      tt1<-as.numeric(input$form)-1
+      tt2<-as.numeric(input$form)+8
+      
+      if(input$yco=="TMU" & input$abb=="3"){
+        HTML(paste0('<iframe width="800" height="600" src=https://www.youtube.com/embed/OZFAqr64Tik?start=',
+                    tt1,'&amp;end=',tt2,'&amp;autoplay=1&amp;cc_load_policy=0&amp;
+                    loop=1&amp;iv_load_policy=0&amp;fs=1&amp;showinfo=0><a frameborder="0" allowfullscreen>'))}
+      else if(input$yco=="TMU" & input$abb=="4"){
+        HTML(paste0('<iframe width="800" height="600" src=https://www.youtube.com/embed/tp4RjdecPwU?start=',
+                    tt1,'&amp;end=',tt2,'&amp;autoplay=1&amp;cc_load_policy=0&amp;
+                    loop=1&amp;iv_load_policy=0&amp;fs=1&amp;showinfo=0><a frameborder="0" allowfullscreen>'))}  
+      else if(input$yco=="TKU" & input$abb=="2"){
+        HTML(paste0('<iframe width="800" height="600" src=https://www.youtube.com/embed/Bnopqi8hozU?start=',
+                    tt1,'&amp;end=',tt2,'&amp;autoplay=1&amp;cc_load_policy=0&amp;
+                    loop=1&amp;iv_load_policy=0&amp;fs=1&amp;showinfo=0><a frameborder="0" allowfullscreen>'))}
+      else if(input$yco=="TKU" & input$abb=="1"){
+        HTML(paste0('<iframe width="800" height="600" src=https://www.youtube.com/embed/qWxv5CQd9ws?start=',
+                    tt1,'&amp;end=',tt2,'&amp;autoplay=1&amp;cc_load_policy=0&amp;
+                    loop=1&amp;iv_load_policy=0&amp;fs=1&amp;showinfo=0><a frameborder="0" allowfullscreen>'))}
+      else if(input$yco=="NTUB" & input$abb=="1"){
+        HTML(paste0('<iframe width="800" height="600" src=https://www.youtube.com/embed/dQEhzrRiI3Y?start=',
+                    tt1,'&amp;end=',tt2,'&amp;autoplay=1&amp;cc_load_policy=0&amp;
+                    loop=1&amp;iv_load_policy=0&amp;fs=1&amp;showinfo=0><a frameborder="0" allowfullscreen>'))}
+      else if(input$yco=="Asian Championships" & input$abb=="1"){
+        HTML(paste0('<iframe width="800" height="600" src=https://www.youtube.com/embed/Bhsy2Yk1Xko?start=',
+                    tt1,'&amp;end=',tt2,'&amp;autoplay=1&amp;cc_load_policy=0&amp;
+                    loop=1&amp;iv_load_policy=0&amp;fs=1&amp;showinfo=0><a frameborder="0" allowfullscreen>'))}
+      else{print("no video")}
+      })
+      })
+  }      
+
+#shinyapp
+shinyApp(ui=ui, server=server)
+
+
